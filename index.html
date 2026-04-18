@@ -24,6 +24,8 @@
       width: 1116px;
       height: 240px;
       overflow: hidden;
+      transform-origin: top left;
+      will-change: transform;
     }
 
     /* Background gif fills game viewport (left side only) */
@@ -211,10 +213,13 @@
       // 1. Constants
       const GAME_VIEWPORT_WIDTH    = 817;
       const GAME_HEIGHT            = 240;
+      const GAME_ROOT_WIDTH        = 1116;
+      const GAME_ROOT_HEIGHT       = 240;
       const TARGET_H               = 110;
       const TARGET_W               = Math.round(TARGET_H * (400 / 270)); // 163
       const MAGNET_RADIUS          = 160; // px — crosshair attraction starts here
       const MAGNET_STRENGTH        = 0.70; // 0=no pull, 1=snap to center
+      const MOBILE_FIT_MAX_WIDTH   = 768;
       const DOOR_HOVER_GRACE_MS    = 800;
       const DOOR_SHAKE_DURATION_MS = 1200;
       const MISS_EFFECT_DURATION_MS = 280;
@@ -244,6 +249,7 @@
         mouseY: 0,
         crosshairX: 0,    // magnetized display position (used for hit detection)
         crosshairY: 0,
+        renderScale: 1,
         leaveTimer: null,
         frameCount: 0,
         targets: {},
@@ -268,6 +274,8 @@
       }
 
       function init() {
+        updateLayoutScale();
+
         const usableH = GAME_HEIGHT - TARGET_H;
         const bandH   = usableH / 4;
         let band = 0;
@@ -283,6 +291,42 @@
 
         requestAnimationFrame(gameLoop);
         setupEventListeners();
+      }
+
+      function clamp(value, min, max) {
+        return Math.max(min, Math.min(value, max));
+      }
+
+      // Keep native 1116x240 internals and only scale the whole stage on small viewports.
+      // Pointer coordinates are converted back into native game space for accurate aiming.
+      function updateLayoutScale() {
+        var viewportW = window.innerWidth || document.documentElement.clientWidth || GAME_ROOT_WIDTH;
+        var viewportH = window.innerHeight || document.documentElement.clientHeight || GAME_ROOT_HEIGHT;
+        var shouldScaleDown = viewportW <= MOBILE_FIT_MAX_WIDTH;
+        var scale = shouldScaleDown ? Math.min(viewportW / GAME_ROOT_WIDTH, viewportH / GAME_ROOT_HEIGHT) : 1;
+
+        if (!Number.isFinite(scale) || scale <= 0) scale = 1;
+        state.renderScale = scale;
+
+        gameRoot.style.transform = scale < 1 ? 'scale(' + scale + ')' : 'none';
+        document.body.style.width = Math.round(GAME_ROOT_WIDTH * scale) + 'px';
+        document.body.style.height = Math.round(GAME_ROOT_HEIGHT * scale) + 'px';
+      }
+
+      function setPointerFromClient(clientX, clientY) {
+        const rect = gameRoot.getBoundingClientRect();
+        const scale = state.renderScale || 1;
+        const x = (clientX - rect.left) / scale;
+        const y = (clientY - rect.top) / scale;
+
+        state.mouseX = clamp(x, 0, GAME_VIEWPORT_WIDTH);
+        state.mouseY = clamp(y, 0, GAME_HEIGHT);
+
+        const pos = applyMagnetism(state.mouseX, state.mouseY);
+        state.crosshairX = pos.x;
+        state.crosshairY = pos.y;
+        crosshair.style.left = pos.x + 'px';
+        crosshair.style.top  = pos.y + 'px';
       }
 
       // 6. Door State Machine
@@ -406,30 +450,26 @@
 
       // 10. Event Listeners
       function setupEventListeners() {
+        window.addEventListener('resize', updateLayoutScale);
+        window.addEventListener('orientationchange', updateLayoutScale);
+
         // Desktop mouse move — compute raw pos, then magnetize for display + hit detection
         gameRoot.addEventListener('mousemove', function (e) {
-          const rect = gameRoot.getBoundingClientRect();
-          state.mouseX = e.clientX - rect.left;
-          state.mouseY = e.clientY - rect.top;
-          const pos = applyMagnetism(state.mouseX, state.mouseY);
-          state.crosshairX = pos.x;
-          state.crosshairY = pos.y;
-          crosshair.style.left = pos.x + 'px';
-          crosshair.style.top  = pos.y + 'px';
+          setPointerFromClient(e.clientX, e.clientY);
+        });
+
+        gameRoot.addEventListener('touchstart', function (e) {
+          const touch = e.touches[0];
+          if (!touch) return;
+          setPointerFromClient(touch.clientX, touch.clientY);
         });
 
         // Mobile touch move
         gameRoot.addEventListener('touchmove', function (e) {
           e.preventDefault();
-          const rect  = gameRoot.getBoundingClientRect();
           const touch = e.touches[0];
-          state.mouseX = touch.clientX - rect.left;
-          state.mouseY = touch.clientY - rect.top;
-          const pos = applyMagnetism(state.mouseX, state.mouseY);
-          state.crosshairX = pos.x;
-          state.crosshairY = pos.y;
-          crosshair.style.left = pos.x + 'px';
-          crosshair.style.top  = pos.y + 'px';
+          if (!touch) return;
+          setPointerFromClient(touch.clientX, touch.clientY);
         }, { passive: false });
 
         gameRoot.addEventListener('click', handleShot);
