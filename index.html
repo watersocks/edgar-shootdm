@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Shoot a DM</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 1116px;
+      height: 240px;
+      overflow: hidden;
+      background: #000;
+      cursor: none;
+    }
+
+    #game-root {
+      position: relative;
+      width: 1116px;
+      height: 240px;
+      overflow: hidden;
+    }
+
+    /* Background gif fills game viewport (left side only) */
+    #bg {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 817px;
+      height: 240px;
+      object-fit: cover;
+      z-index: 1;
+      transition: filter 0.3s ease-out;
+    }
+
+    /* Miss effect canvas — kept in DOM per spec, unused now */
+    #miss-canvas {
+      display: none;
+    }
+
+    /* Targets layer */
+    #targets-layer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 817px;
+      height: 240px;
+      z-index: 3;
+      pointer-events: none;
+      transition: filter 0.3s ease-out;
+    }
+
+    /* Icons are 400×270 natural — render at 110px tall, width auto */
+    .target {
+      position: absolute;
+      width: auto;
+      height: 110px;
+      pointer-events: none;
+      transition: filter 0.1s;
+    }
+
+    .target.hit-flash {
+      filter: brightness(5) saturate(0);
+    }
+
+    /* Clip container — keeps door animations inside the 817px game viewport */
+    #game-clip {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 817px;
+      height: 240px;
+      z-index: 4;
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    /*
+      L Gate 432×287 → rendered 361×240. Solid content ends ~302px at mid-height.
+      R Gate 696×287 → rendered 582×240. Solid content starts ~19px from left edge.
+      door-right at left:283 → solid starts at 283+19=302px. Seamless join.
+      translateX(100%) on door-right = +582px → clips past 817px boundary. ✓
+    */
+    #door-left,
+    #door-right {
+      position: absolute;
+      top: 0;
+      height: 240px;
+      transition: transform 0s;
+    }
+
+    #door-left  { left: 0;     width: 361px; }
+    #door-right { left: 283px; width: 534px; } /* 283+534=817 — clips exactly at game boundary, shows full R Gate content */
+
+    #door-left img,
+    #door-right img {
+      width: 100%;
+      height: 100%;
+      object-fit: fill;
+      display: block;
+    }
+
+    /* Door states */
+    #door-left.door-open  { transform: translateX(-100%); transition: transform 0.6s ease-in;  }
+    #door-right.door-open { transform: translateX(100%);  transition: transform 0.6s ease-in;  }
+    #door-left.door-closed  { transform: translateX(0%);  transition: transform 0.5s ease-out; }
+    #door-right.door-closed { transform: translateX(0%);  transition: transform 0.5s ease-out; }
+
+    /* Door shake — runs before slide-open */
+    @keyframes door-shake {
+      0%   { transform: translateX(0px)  rotate(0deg);    }
+      10%  { transform: translateX(-3px) rotate(-0.5deg); }
+      20%  { transform: translateX(3px)  rotate(0.5deg);  }
+      30%  { transform: translateX(-4px) rotate(-0.3deg); }
+      40%  { transform: translateX(4px)  rotate(0.3deg);  }
+      50%  { transform: translateX(-3px) rotate(-0.5deg); }
+      60%  { transform: translateX(3px)  rotate(0.5deg);  }
+      70%  { transform: translateX(-2px) rotate(-0.2deg); }
+      80%  { transform: translateX(2px)  rotate(0.2deg);  }
+      90%  { transform: translateX(-1px) rotate(0deg);    }
+      100% { transform: translateX(0px)  rotate(0deg);    }
+    }
+
+    #door-left.shaking,
+    #door-right.shaking {
+      animation: door-shake 1.2s ease-in-out forwards;
+    }
+
+    /* CROSSHAIR — transition on transform lets scale-up on shot ease back */
+    #crosshair {
+      position: absolute;
+      width: 40px;
+      height: 40px;
+      background-image: url('assets/white%20cross.png');
+      background-size: contain;
+      background-repeat: no-repeat;
+      background-position: center;
+      pointer-events: none;
+      z-index: 6;
+      transform: translate(-50%, -50%);
+      transition: transform 0.15s ease-out;
+      display: none;
+    }
+
+    /* Near a target: yellow */
+    #crosshair.proximity {
+      background-image: url('assets/yellow%20cross.png');
+    }
+
+    /* Shot fired: yellow + pop scale (defined after .proximity so it wins specificity tie) */
+    #crosshair.shot {
+      background-image: url('assets/yellow%20cross.png');
+      transform: translate(-50%, -50%) scale(1.4);
+    }
+
+    /* BORDER OVERLAY — topmost decorative frame, full 1116×240 */
+    #border-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 1116px;
+      height: 240px;
+      z-index: 7;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="game-root">
+
+    <!-- LAYER 1: Background -->
+    <img id="bg" src="assets/background.gif" />
+
+    <!-- LAYER 2: Canvas (kept per spec, unused) -->
+    <canvas id="miss-canvas"></canvas>
+
+    <!-- LAYER 3: Flying social targets -->
+    <div id="targets-layer">
+      <img class="target" id="target-email"    src="assets/socials/email.gif"  />
+      <img class="target" id="target-insta"    src="assets/socials/insta.gif"  />
+      <img class="target" id="target-linkedin" src="assets/socials/linkin.gif" />
+      <img class="target" id="target-tiktok"   src="assets/socials/tiktok.gif" />
+    </div>
+
+    <!-- LAYER 4: Steel doors (clipped to game viewport) -->
+    <div id="game-clip">
+      <div id="door-left">
+        <img src="assets/Wall%20Opening/L%20Gate.png" />
+      </div>
+      <div id="door-right">
+        <img src="assets/Wall%20Opening/R%20Gate.png" />
+      </div>
+    </div>
+
+    <!-- LAYER 5: Crosshair -->
+    <div id="crosshair"></div>
+
+    <!-- LAYER 6: Border total gif — covers entire 1116×240 -->
+    <img id="border-overlay" src="assets/border%20total.gif" />
+
+  </div>
+
+  <script>
+    (function () {
+
+      // 1. Constants
+      const GAME_VIEWPORT_WIDTH    = 817;
+      const GAME_HEIGHT            = 240;
+      const TARGET_H               = 110;
+      const TARGET_W               = Math.round(TARGET_H * (400 / 270)); // 163
+      const MAGNET_RADIUS          = 160; // px — crosshair attraction starts here
+      const MAGNET_STRENGTH        = 0.70; // 0=no pull, 1=snap to center
+      const DOOR_HOVER_GRACE_MS    = 800;
+      const DOOR_SHAKE_DURATION_MS = 1200;
+      const MISS_EFFECT_DURATION_MS = 280;
+      const SHOT_FLASH_MS          = 160;
+
+      const SOCIAL_LINKS = {
+        'target-email':    'https://cieloslosangeles.com/',
+        'target-insta':    'https://www.instagram.com/ed.herndez/',
+        'target-linkedin': 'https://www.linkedin.com/in/edgar-hernandez-3627b119a/',
+        'target-tiktok':   'https://www.tiktok.com/@cielos.la'
+      };
+
+      // 2. Target Flight Paths
+      const targetConfigs = {
+        'target-email':    { vx:  1.2, amp: 40, freq: 0.018, phase: 0.0 },
+        'target-insta':    { vx: -1.5, amp: 30, freq: 0.025, phase: 1.1 },
+        'target-linkedin': { vx:  0.9, amp: 48, freq: 0.012, phase: 2.3 },
+        'target-tiktok':   { vx: -1.1, amp: 35, freq: 0.020, phase: 0.7 }
+      };
+
+      // 3. State
+      const state = {
+        doorsOpen: false,
+        doorsAnimating: false,
+        gameActive: false,
+        mouseX: 0,        // raw mouse
+        mouseY: 0,
+        crosshairX: 0,    // magnetized display position (used for hit detection)
+        crosshairY: 0,
+        leaveTimer: null,
+        frameCount: 0,
+        targets: {},
+        missEffectActive: false,
+        isMobile: ('ontouchstart' in window) || (navigator.maxTouchPoints > 0)
+      };
+
+      // 4. DOM References
+      const gameRoot    = document.getElementById('game-root');
+      const doorLeft    = document.getElementById('door-left');
+      const doorRight   = document.getElementById('door-right');
+      const crosshair   = document.getElementById('crosshair');
+      const bgEl        = document.getElementById('bg');
+      const targetsLayer = document.getElementById('targets-layer');
+      const targetEls   = document.querySelectorAll('.target');
+
+      // 5. Init
+      if (document.readyState !== 'loading') {
+        init();
+      } else {
+        document.addEventListener('DOMContentLoaded', init);
+      }
+
+      function init() {
+        const usableH = GAME_HEIGHT - TARGET_H;
+        const bandH   = usableH / 4;
+        let band = 0;
+
+        targetEls.forEach(function (el) {
+          const x     = TARGET_W + Math.random() * (GAME_VIEWPORT_WIDTH - TARGET_W * 2);
+          const baseY = Math.round(band * bandH + Math.random() * bandH);
+          state.targets[el.id] = { x: x, baseY: Math.max(0, Math.min(baseY, usableH)), tick: Math.random() * Math.PI * 2 };
+          el.style.left = x + 'px';
+          el.style.top  = state.targets[el.id].baseY + 'px';
+          band++;
+        });
+
+        requestAnimationFrame(gameLoop);
+        setupEventListeners();
+      }
+
+      // 6. Door State Machine
+      function openDoors() {
+        if (state.doorsAnimating || state.doorsOpen) return;
+        state.doorsAnimating = true;
+
+        doorLeft.classList.add('shaking');
+        doorRight.classList.add('shaking');
+
+        setTimeout(function () {
+          // Remove the CSS animation. Force a reflow so the browser commits
+          // the resting transform before we start the slide transition.
+          doorLeft.classList.remove('shaking');
+          doorRight.classList.remove('shaking');
+          void doorLeft.offsetHeight;   // force reflow — critical for transition to fire
+          void doorRight.offsetHeight;
+
+          doorLeft.classList.remove('door-closed');
+          doorRight.classList.remove('door-closed');
+          doorLeft.classList.add('door-open');
+          doorRight.classList.add('door-open');
+
+          state.doorsOpen      = true;
+          state.doorsAnimating = false;
+          state.gameActive     = true;
+          crosshair.style.display = 'block';
+        }, DOOR_SHAKE_DURATION_MS);
+      }
+
+      function closeDoors() {
+        if (!state.doorsOpen) return;
+        doorLeft.classList.remove('door-open');
+        doorRight.classList.remove('door-open');
+        doorLeft.classList.add('door-closed');
+        doorRight.classList.add('door-closed');
+        state.doorsOpen  = false;
+        state.gameActive = false;
+        crosshair.style.display = 'none';
+      }
+
+      // 7. Game Loop
+      function gameLoop() {
+        requestAnimationFrame(gameLoop);
+        if (!state.gameActive) return;
+
+        state.frameCount++;
+        const usableH = GAME_HEIGHT - TARGET_H;
+
+        targetEls.forEach(function (el) {
+          const cfg = targetConfigs[el.id];
+          const t   = state.targets[el.id];
+
+          t.x += cfg.vx;
+          if (t.x <= 0 || t.x >= GAME_VIEWPORT_WIDTH - TARGET_W) {
+            cfg.vx *= -1;
+            t.x = Math.max(0, Math.min(t.x, GAME_VIEWPORT_WIDTH - TARGET_W));
+          }
+
+          t.tick += cfg.freq;
+          const y = t.baseY + Math.sin(t.tick + cfg.phase) * cfg.amp;
+          el.style.left = t.x + 'px';
+          el.style.top  = Math.max(0, Math.min(y, usableH)) + 'px';
+        });
+
+        // Recompute magnetized crosshair position every frame so it tracks
+        // moving targets even when the mouse is stationary.
+        const pos = applyMagnetism(state.mouseX, state.mouseY);
+        state.crosshairX = pos.x;
+        state.crosshairY = pos.y;
+        crosshair.style.left = pos.x + 'px';
+        crosshair.style.top  = pos.y + 'px';
+
+        updateCrosshairState();
+      }
+
+      // 8. Magnetism — gentle pull toward nearest live target within MAGNET_RADIUS
+      function applyMagnetism(mx, my) {
+        if (!state.gameActive) return { x: mx, y: my };
+
+        var closestDist = Infinity;
+        var closestCX   = mx;
+        var closestCY   = my;
+
+        targetEls.forEach(function (el) {
+          if (el.dataset.dead) return;
+          const t  = state.targets[el.id];
+          const cx = t.x + TARGET_W / 2;
+          const cy = parseFloat(el.style.top) + TARGET_H / 2;
+          const d  = Math.hypot(mx - cx, my - cy);
+          if (d < MAGNET_RADIUS && d < closestDist) {
+            closestDist = d;
+            closestCX   = cx;
+            closestCY   = cy;
+          }
+        });
+
+        if (closestDist < MAGNET_RADIUS) {
+          // Pull strength increases as mouse gets closer (0 at edge, MAGNET_STRENGTH at center)
+          const pull = MAGNET_STRENGTH * (1 - closestDist / MAGNET_RADIUS);
+          return {
+            x: mx + (closestCX - mx) * pull,
+            y: my + (closestCY - my) * pull
+          };
+        }
+        return { x: mx, y: my };
+      }
+
+      // 9. Crosshair State (proximity yellow)
+      function updateCrosshairState() {
+        let nearAny = false;
+        targetEls.forEach(function (el) {
+          if (el.dataset.dead) return;
+          const t  = state.targets[el.id];
+          const cx = t.x + TARGET_W / 2;
+          const cy = parseFloat(el.style.top) + TARGET_H / 2;
+          if (Math.hypot(state.crosshairX - cx, state.crosshairY - cy) < 80) nearAny = true;
+        });
+        crosshair.classList.toggle('proximity', nearAny);
+      }
+
+      // 10. Event Listeners
+      function setupEventListeners() {
+        // Desktop mouse move — compute raw pos, then magnetize for display + hit detection
+        gameRoot.addEventListener('mousemove', function (e) {
+          const rect = gameRoot.getBoundingClientRect();
+          state.mouseX = e.clientX - rect.left;
+          state.mouseY = e.clientY - rect.top;
+          const pos = applyMagnetism(state.mouseX, state.mouseY);
+          state.crosshairX = pos.x;
+          state.crosshairY = pos.y;
+          crosshair.style.left = pos.x + 'px';
+          crosshair.style.top  = pos.y + 'px';
+        });
+
+        // Mobile touch move
+        gameRoot.addEventListener('touchmove', function (e) {
+          e.preventDefault();
+          const rect  = gameRoot.getBoundingClientRect();
+          const touch = e.touches[0];
+          state.mouseX = touch.clientX - rect.left;
+          state.mouseY = touch.clientY - rect.top;
+          const pos = applyMagnetism(state.mouseX, state.mouseY);
+          state.crosshairX = pos.x;
+          state.crosshairY = pos.y;
+          crosshair.style.left = pos.x + 'px';
+          crosshair.style.top  = pos.y + 'px';
+        }, { passive: false });
+
+        gameRoot.addEventListener('click', handleShot);
+        gameRoot.addEventListener('touchend', function (e) {
+          e.preventDefault();
+          handleShot(e);
+        }, { passive: false });
+
+        if (state.isMobile) {
+          const observer = new IntersectionObserver(function (entries) {
+            entries.forEach(function (entry) {
+              if (entry.intersectionRatio > 0.5) {
+                if (!state.doorsOpen && !state.doorsAnimating) openDoors();
+              } else {
+                closeDoors();
+              }
+            });
+          }, { threshold: [0, 0.5, 1.0] });
+          observer.observe(gameRoot);
+        } else {
+          gameRoot.addEventListener('mouseenter', function () {
+            if (state.leaveTimer) { clearTimeout(state.leaveTimer); state.leaveTimer = null; }
+            if (!state.doorsOpen && !state.doorsAnimating) openDoors();
+          });
+          gameRoot.addEventListener('mouseleave', function () {
+            state.leaveTimer = setTimeout(function () {
+              closeDoors();
+              state.leaveTimer = null;
+            }, DOOR_HOVER_GRACE_MS);
+          });
+        }
+      }
+
+      // 11. Shot handling — always flash crosshair; hit or miss branch
+      function handleShot(e) {
+        if (!state.gameActive) return;
+
+        flashCrosshair();
+
+        let hit = false;
+        targetEls.forEach(function (el) {
+          if (el.dataset.dead) return;
+          const t  = state.targets[el.id];
+          const ty = parseFloat(el.style.top);
+          // Use magnetized crosshair position for hit detection
+          const inX = state.crosshairX >= t.x - 10 && state.crosshairX <= t.x + TARGET_W + 10;
+          const inY = state.crosshairY >= ty - 10   && state.crosshairY <= ty + TARGET_H + 10;
+          if (inX && inY) { hit = true; registerHit(el); }
+        });
+
+        if (!hit) triggerMissEffect();
+      }
+
+      // 12. Crosshair shot flash — yellow + scale pop, resets via CSS transition
+      function flashCrosshair() {
+        crosshair.classList.remove('shot');
+        void crosshair.offsetHeight; // restart if already flashing
+        crosshair.classList.add('shot');
+        setTimeout(function () { crosshair.classList.remove('shot'); }, SHOT_FLASH_MS);
+      }
+
+      // 13. Hit Effect
+      function registerHit(el) {
+        el.dataset.dead = 'true';
+        el.classList.add('hit-flash');
+        window.open(SOCIAL_LINKS[el.id], '_blank');
+
+        setTimeout(function () {
+          el.classList.remove('hit-flash');
+          delete el.dataset.dead;
+          const usableH = GAME_HEIGHT - TARGET_H;
+          state.targets[el.id].x     = TARGET_W + Math.random() * (GAME_VIEWPORT_WIDTH - TARGET_W * 2);
+          state.targets[el.id].baseY = Math.round(Math.random() * usableH);
+          state.targets[el.id].tick  = Math.random() * Math.PI * 2;
+        }, 1000);
+      }
+
+      // 14. Miss Effect — instant greyscale desaturate, slow color restore
+      function triggerMissEffect() {
+        if (state.missEffectActive) return;
+        state.missEffectActive = true;
+
+        // Snap to greyscale immediately
+        bgEl.style.transition        = 'filter 0s';
+        targetsLayer.style.transition = 'filter 0s';
+        bgEl.style.filter        = 'grayscale(1) brightness(0.55)';
+        targetsLayer.style.filter = 'grayscale(1) brightness(0.55)';
+
+        setTimeout(function () {
+          // Ease back to full color
+          bgEl.style.transition        = 'filter 0.4s ease-out';
+          targetsLayer.style.transition = 'filter 0.4s ease-out';
+          bgEl.style.filter        = '';
+          targetsLayer.style.filter = '';
+          setTimeout(function () { state.missEffectActive = false; }, 450);
+        }, MISS_EFFECT_DURATION_MS);
+      }
+
+    })();
+  </script>
+</body>
+</html>
