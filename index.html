@@ -219,7 +219,6 @@
       const TARGET_W               = Math.round(TARGET_H * (400 / 270)); // 163
       const MAGNET_RADIUS          = 160; // px — crosshair attraction starts here
       const MAGNET_STRENGTH        = 0.70; // 0=no pull, 1=snap to center
-      const MOBILE_FIT_MAX_WIDTH   = 768;
       const DOOR_HOVER_GRACE_MS    = 800;
       const DOOR_SHAKE_DURATION_MS = 1200;
       const MISS_EFFECT_DURATION_MS = 280;
@@ -300,17 +299,26 @@
       // Keep native 1116x240 internals and only scale the whole stage on small viewports.
       // Pointer coordinates are converted back into native game space for accurate aiming.
       function updateLayoutScale() {
-        var viewportW = window.innerWidth || document.documentElement.clientWidth || GAME_ROOT_WIDTH;
-        var viewportH = window.innerHeight || document.documentElement.clientHeight || GAME_ROOT_HEIGHT;
-        var shouldScaleDown = viewportW <= MOBILE_FIT_MAX_WIDTH;
-        var scale = shouldScaleDown ? Math.min(viewportW / GAME_ROOT_WIDTH, viewportH / GAME_ROOT_HEIGHT) : 1;
+        var viewportW = (window.visualViewport && window.visualViewport.width) ||
+                        window.innerWidth ||
+                        document.documentElement.clientWidth ||
+                        GAME_ROOT_WIDTH;
+        var viewportH = (window.visualViewport && window.visualViewport.height) ||
+                        window.innerHeight ||
+                        document.documentElement.clientHeight ||
+                        GAME_ROOT_HEIGHT;
+        var scale = Math.min(viewportW / GAME_ROOT_WIDTH, viewportH / GAME_ROOT_HEIGHT, 1);
 
         if (!Number.isFinite(scale) || scale <= 0) scale = 1;
         state.renderScale = scale;
 
         gameRoot.style.transform = scale < 1 ? 'scale(' + scale + ')' : 'none';
-        document.body.style.width = Math.round(GAME_ROOT_WIDTH * scale) + 'px';
-        document.body.style.height = Math.round(GAME_ROOT_HEIGHT * scale) + 'px';
+        var scaledW = Math.round(GAME_ROOT_WIDTH * scale);
+        var scaledH = Math.round(GAME_ROOT_HEIGHT * scale);
+        document.body.style.width = scaledW + 'px';
+        document.body.style.height = scaledH + 'px';
+        document.documentElement.style.width = scaledW + 'px';
+        document.documentElement.style.height = scaledH + 'px';
       }
 
       function setPointerFromClient(clientX, clientY) {
@@ -452,6 +460,10 @@
       function setupEventListeners() {
         window.addEventListener('resize', updateLayoutScale);
         window.addEventListener('orientationchange', updateLayoutScale);
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener('resize', updateLayoutScale);
+          window.visualViewport.addEventListener('scroll', updateLayoutScale);
+        }
 
         // Desktop mouse move — compute raw pos, then magnetize for display + hit detection
         gameRoot.addEventListener('mousemove', function (e) {
